@@ -68,6 +68,30 @@ func Provider() terraform.ResourceProvider {
 				DefaultFunc: schema.EnvDefaultFunc("VAULT_CAPATH", ""),
 				Description: "Path to directory containing CA certificate files to validate the server's certificate.",
 			},
+			"auth_login": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				Description: "Login to vault with an existing auth method using auth/<mount>/login",
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"path": {
+							Type:     schema.TypeString,
+							Required: true,
+						},
+						"namespace": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"parameters": {
+							Type:     schema.TypeMap,
+							Optional: true,
+							Elem: &schema.Schema{
+								Type: schema.TypeString,
+							},
+						},
+					},
+				},
+			},
 			"client_auth": {
 				Type:        schema.TypeList,
 				Optional:    true,
@@ -275,6 +299,10 @@ var (
 		"vault_consul_secret_backend": {
 			Resource:      consulSecretBackendResource(),
 			PathInventory: []string{"/consul/config/access"},
+		},
+		"vault_consul_secret_backend_role": {
+			Resource:      consulSecretBackendRoleResource(),
+			PathInventory: []string{"/consul/roles/{name}"},
 		},
 		"vault_database_secret_backend_connection": {
 			Resource:      databaseSecretBackendConnectionResource(),
@@ -567,6 +595,29 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	token, err := providerToken(d)
 	if err != nil {
 		return nil, err
+	}
+
+	// Attempt to use auth/<mount>login if 'auth_login' is provided in provider config
+	authLoginI := d.Get("auth_login").([]interface{})
+	if len(authLoginI) > 1 {
+		return "", fmt.Errorf("auth_login block may appear only once")
+	}
+
+	if len(authLoginI) == 1 {
+		authLogin := authLoginI[0].(map[string]interface{})
+		authLoginPath := authLogin["path"].(string)
+		authLoginNamespace := ""
+		if authLoginNamespaceI, ok := authLogin["namespace"]; ok {
+			authLoginNamespace = authLoginNamespaceI.(string)
+			client.SetNamespace(authLoginNamespace)
+		}
+		authLoginParameters := authLogin["parameters"].(map[string]interface{})
+
+		secret, err := client.Logical().Write(authLoginPath, authLoginParameters)
+		if err != nil {
+			return nil, err
+		}
+		token = secret.Auth.ClientToken
 	}
 	if token != "" {
 		client.SetToken(token)
